@@ -24,13 +24,22 @@ typedef struct ASTNode {
     int val;
     char *name;
     int name_sz;
-    struct ASTNode *child;
+    struct ASTNode **children;
+    int children_len;
     struct ASTNode *parent;
     Op op;
 } ASTNode;
 
 void *emalloc(size_t sz) {
     void *ptr = malloc(sz);
+    if (!ptr)
+        fatal("Out of memory!\n");
+
+    return ptr;
+}
+
+void *ecalloc(size_t sz) {
+    void *ptr = calloc(sz, 1);
     if (!ptr)
         fatal("Out of memory!\n");
 
@@ -126,9 +135,11 @@ int main(int argc, char *argv[]) {
     if (n != file_size)
         fatal("Failed to read the whole file! %zu != %zu\n", n, file_size);
 
-    char *func_name;
-    int func_name_sz;
     int ret_val;
+
+    ASTNode program = {0};
+    program.type = Type_Program;
+    program.children = ecalloc(sizeof(ASTNode *) * 10);
 
     int size;
     char *file_ptr = file_buf;
@@ -143,8 +154,13 @@ int main(int argc, char *argv[]) {
             token = get_next_token(file_ptr, file_end, &size);
             if (!size) fatal("Expected function name!\n");
 
-            func_name = token;
-            func_name_sz = size;
+            ASTNode *function = ecalloc(sizeof(ASTNode));
+            function->type = Type_Function;
+            function->children = ecalloc(sizeof(ASTNode *) * 10);
+            function->parent = &program;
+            function->name = token;
+            function->name_sz = size;
+            program.children[program.children_len++] = function;
 
             file_ptr = token + size;
             token = get_next_token(file_ptr, file_end, &size);
@@ -169,17 +185,30 @@ int main(int argc, char *argv[]) {
             file_ptr = token + size;
             while (file_ptr < file_end) {
                 token = get_next_token(file_ptr, file_end, &size);
-                if (!size) fatal("Expected }\n");
+                if (!size) fatal("Expected further tokens in function body\n");
                 if (*token == '}') break;
                 file_ptr = token + size;
 
                 if (memcmp(token, "return", size))
                     fatal("Expected return!\n");
 
+                ASTNode *statement = ecalloc(sizeof(ASTNode));
+                statement->type = Type_Statement;
+                statement->children = ecalloc(sizeof(ASTNode *) * 10);
+                statement->parent = function;
+                statement->op = Op_Return;
+                function->children[function->children_len++] = statement;
+
                 token = get_next_token(file_ptr, file_end, &size);
                 if (!size) fatal("Expected constant!\n");
                 file_ptr = token + size;
                 ret_val = strtoi(token, size);
+
+                ASTNode *literal = ecalloc(sizeof(ASTNode));
+                literal->type = Type_Literal;
+                literal->parent = statement;
+                literal->val = ret_val;
+                statement->children[statement->children_len++] = literal;
 
                 token = get_next_token(file_ptr, file_end, &size);
                 if (!size || *token != ';') fatal("Expected ;\n");
@@ -190,40 +219,36 @@ int main(int argc, char *argv[]) {
         file_ptr = token + size;
     }
 
-    ASTNode literal, statement, function, program;
-
-    program.type = Type_Program;
-    program.child = &function;
-    program.parent = NULL;
-
-    function.type = Type_Function;
-    function.child = &statement;
-    function.parent = &program;
-    function.name = func_name;
-    function.name_sz = func_name_sz;
-
-    statement.type = Type_Statement;
-    statement.child = &literal;
-    statement.parent = &function;
-    statement.op = Op_Return;
-
-    literal.type = Type_Literal;
-    literal.child = NULL;
-    literal.parent = &statement;
-    literal.val = ret_val; 
-
-    n = 0;
     char out_buf[1500] = {0};
 
+    n = sprintf(out_buf, "bits 64\n"
+                         "section .text\n\n");
+
+    int i = 0;
+    int stack_depth = 0;
+    ASTNode *stack[100] = {0};
+
     ASTNode *node = &program;
-    while (node) {
+    for (i = node->children_len - 1; i >= 0; i--) {
+        stack[stack_depth++] = node->children[i];
+    }
+
+    while (stack_depth) {
+        node = stack[--stack_depth];
+
         switch (node->type) {
             case Type_Statement: {
-                if (node->op == Op_Return) {
-                    n += sprintf(out_buf + n, "    mov rax, 60\n" 
-                                              "    mov rdi, %d\n" 
-                                              "    syscall\n",
-                                              node->child->val);
+                if (node->op == Op_Return) { 
+                    if (!memcmp("main", node->parent->name, node->parent->name_sz)) {
+                        n += sprintf(out_buf + n, "    mov rax, 60\n" 
+                                                  "    mov rdi, %d\n" 
+                                                  "    syscall\n",
+                                                  node->children[0]->val);
+                    } else {
+                        n += sprintf(out_buf + n, "    mov rax, %d\n" 
+                                                  "    ret\n\n", 
+                                                  node->children[0]->val);
+                    }
                 } else {
                     fatal("Op type %d not handled yet!\n", node->op);
                 }
@@ -239,10 +264,6 @@ int main(int argc, char *argv[]) {
                                               node->name_sz, node->name);  
                 }
             } break;
-            case Type_Program: {
-                n += sprintf(out_buf + n, "bits 64\n"
-                                          "section .text\n");
-            } break;
             case Type_Literal: {
 
             } break;
@@ -251,7 +272,9 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        node = node->child;
+        for (i = node->children_len - 1; i >= 0; i--) {
+            stack[stack_depth++] = node->children[i];
+        }
     }
 
     write(out_fd, out_buf, n);
