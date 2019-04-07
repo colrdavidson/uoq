@@ -1,2 +1,5 @@
 *.swp
 uoq
+bin
+build
+test.asm
