@@ -1,4 +1,4 @@
-int foo() {
+int _foo2() {
     return 0;
 }
 

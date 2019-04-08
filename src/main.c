@@ -4,6 +4,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 
 #define fatal(...) do { printf("\033[0;31m"); printf(__VA_ARGS__); printf("\033[0m"); exit(1); } while(0);
 
@@ -47,7 +48,7 @@ void *ecalloc(size_t sz) {
 }
 
 int is_char(char c) {
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c == '_'))
         return 1;
     return 0;
 }
@@ -62,6 +63,10 @@ int strtoi(char *s, int sz) {
     int ret = 0;
     int shift = 1;
     for (int i = sz - 1; i >= 0; i--) {
+        if (!is_digit(s[i])) {
+            errno = EINVAL;
+            return 0;
+        }
         ret += (s[i] - '0') * shift;
         shift *= 10;
     }
@@ -85,7 +90,7 @@ char *get_next_token(char *buf, char *end, int *size) {
             goto exit;
         } else if (is_char(*buf)) {
             token = buf;
-            while (is_char(*token)) {
+            while (is_char(*token) || is_digit(*token)) {
                 token++;
             }
 
@@ -144,7 +149,7 @@ int main(int argc, char *argv[]) {
     int size;
     char *file_ptr = file_buf;
     char *file_end = file_buf + file_size;
-    while (file_ptr < file_end) {
+    while (file_ptr <= file_end) {
 
         char *token = get_next_token(file_ptr, file_end, &size);
         if (!size) break;
@@ -169,25 +174,26 @@ int main(int argc, char *argv[]) {
 
             // Function Params
             file_ptr = token + size;
-            while (file_ptr < file_end) {
+            while (file_ptr <= file_end) {
                 token = get_next_token(file_ptr, file_end, &size);
+                file_ptr = token + size;
+
                 if (!size) fatal("Expected )\n");
                 if (*token == ')') break;
-                file_ptr = token + size;
             }
 
-            file_ptr = token + size;
             token = get_next_token(file_ptr, file_end, &size);
             if (!size || *token != '{')
                 fatal("Expected {\n");
 
             // Function Body
             file_ptr = token + size;
-            while (file_ptr < file_end) {
+            while (file_ptr <= file_end) {
                 token = get_next_token(file_ptr, file_end, &size);
-                if (!size) fatal("Expected further tokens in function body\n");
-                if (*token == '}') break;
                 file_ptr = token + size;
+
+                if (!size) fatal("Expected }\n");
+                if (*token == '}') break;
 
                 if (memcmp(token, "return", size))
                     fatal("Expected return!\n");
@@ -202,7 +208,11 @@ int main(int argc, char *argv[]) {
                 token = get_next_token(file_ptr, file_end, &size);
                 if (!size) fatal("Expected constant!\n");
                 file_ptr = token + size;
+
+                errno = 0;
                 ret_val = strtoi(token, size);
+                if (!ret_val && errno)
+                    fatal("Invalid return value!\n");
 
                 ASTNode *literal = ecalloc(sizeof(ASTNode));
                 literal->type = Type_Literal;
