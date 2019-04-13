@@ -6,7 +6,6 @@
 #include <unistd.h>
 #include <errno.h>
 
-#define fatal(...) do { printf("\033[0;31m"); printf(__VA_ARGS__); printf("\033[0m"); exit(1); } while(0);
 
 typedef enum {
     Type_Program,
@@ -30,6 +29,23 @@ typedef struct ASTNode {
     struct ASTNode *parent;
     Op op;
 } ASTNode;
+
+int line_num = 0;
+char *line_str;
+
+#define fatal(...)             \
+do {                           \
+    char *tmp_ptr = line_str;  \
+    while (*tmp_ptr != '\n' && *tmp_ptr != '\0') { \
+        tmp_ptr++;             \
+    }                          \
+    printf("line %d: ", line_num);  \
+    printf("\"%.*s\"\n", (int)(tmp_ptr - line_str), line_str); \
+    printf("\033[0;31m");      \
+    printf(__VA_ARGS__);       \
+    printf("\033[0m");         \
+    exit(1);                   \
+} while (0)
 
 void *emalloc(size_t sz) {
     void *ptr = malloc(sz);
@@ -102,6 +118,9 @@ char *get_next_token(char *buf, char *end, int *size) {
             token = buf;
             *size = 1;
             goto exit;
+        } else if (*buf == '\n') {
+            line_num++;
+            line_str = buf + 1;
         }
 
         buf++;
@@ -149,6 +168,7 @@ int main(int argc, char *argv[]) {
     int size;
     char *file_ptr = file_buf;
     char *file_end = file_buf + file_size;
+    line_str = file_ptr;
     while (file_ptr <= file_end) {
 
         char *token = get_next_token(file_ptr, file_end, &size);
