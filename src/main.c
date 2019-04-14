@@ -11,12 +11,15 @@ typedef enum {
     Type_Program,
     Type_Function,
     Type_Statement,
-    Type_Literal
+    Type_Literal,
+    Type_Expression
 } Type;
 
 typedef enum {
     Op_Return,
-    Op_Add
+    Op_Neg,
+    Op_Not,
+    Op_BitNeg
 } Op;
 
 typedef struct ASTNode {
@@ -49,7 +52,7 @@ void print_line_error(void) {
         while (*tmp_ptr != '\n' && *tmp_ptr != '\0') { 
             tmp_ptr++;                                 
         }                                              
-        printf("line %d: ", line_num);                 
+        printf("line %d: ", line_num + 1);                 
         printf("\"%.*s\"\n", (int)(tmp_ptr - line_str), line_str); 
     }
 }
@@ -76,6 +79,17 @@ void *erealloc(void *in_ptr, size_t sz) {
         fatal("Out of memory!\n");
 
     return ptr;
+}
+
+char *type_str(Type t) {
+    switch (t) {
+        case Type_Program: return "Program";
+        case Type_Function: return "Function";
+        case Type_Expression: return "Expression";
+        case Type_Statement: return "Statement";
+        case Type_Literal: return "Literal";
+        default: fatal("Unsupported type %d\n", t);
+    }
 }
 
 int is_char(char c) {
@@ -128,14 +142,18 @@ char *get_next_token(char *buf, char *end, int *size) {
             *size = token - buf;
             token = buf;
             goto exit;
-        } else if (*buf == ';' || *buf == '(' || 
-                   *buf == ')' || *buf == '{' || *buf == '}') {
+        } else if (*buf == ';' || *buf == '(' || *buf == ')' || 
+                   *buf == '{' || *buf == '}' || *buf == '-' ||
+                   *buf == '~' || *buf == '!') {
             token = buf;
             *size = 1;
             goto exit;
+        } else if(*buf == ' ' || *buf == '\t' || *buf == '\r') { // skip past these
         } else if (*buf == '\n') {
             line_num++;
             line_str = buf + 1;
+        } else {
+            fatal("Unexpected token %c\n", *buf);
         }
 
         buf++;
@@ -149,6 +167,8 @@ exit:
 }
 
 void add_to_AST(ASTNode *parent, ASTNode *child) {
+//    printf("Adding %s to %s\n", type_str(child->type), type_str(parent->type));
+    child->parent = parent;
     if (parent->children_cur_len < parent->children_max_len) {
         parent->children[parent->children_cur_len++] = child;
     } else {
@@ -195,6 +215,7 @@ int main(int argc, char *argv[]) {
     int ret_val;
 
     ASTNode *program = new_ASTNode(Type_Program);
+    ASTNode *cur_node = program;
 
     int size;
     char *file_ptr = file_buf;
@@ -211,10 +232,10 @@ int main(int argc, char *argv[]) {
             if (!size) fatal("Expected function name!\n");
 
             ASTNode *function = new_ASTNode(Type_Function);
-            function->parent = program;
             function->name = token;
             function->name_sz = size;
-            add_to_AST(program, function);
+            add_to_AST(cur_node, function);
+            cur_node = function;
 
             file_ptr = token + size;
             token = get_next_token(file_ptr, file_end, &size);
@@ -242,30 +263,46 @@ int main(int argc, char *argv[]) {
                 file_ptr = token + size;
 
                 if (!size) fatal("Expected }\n");
-                if (*token == '}') break;
+                if (*token == '}') {
+                    cur_node = program;
+                    break;
+                }
 
                 if (memcmp(token, "return", size))
                     fatal("Expected return!\n");
 
                 ASTNode *statement = new_ASTNode(Type_Statement);
-                statement->parent = function;
                 statement->op = Op_Return;
-                add_to_AST(function, statement);
+                add_to_AST(cur_node, statement);
+                cur_node = statement;
 
-                token = get_next_token(file_ptr, file_end, &size);
-                if (!size) fatal("Expected constant!\n");
-                file_ptr = token + size;
+                while (file_ptr <= file_end) {
+                    token = get_next_token(file_ptr, file_end, &size);
+                    file_ptr = token + size;
 
-                errno = 0;
-                ret_val = strtoi(token, size);
-                if (!ret_val && errno)
-                    fatal("Invalid return value!\n");
+                    if (!size) fatal("Expected constant or expression!\n");
+                    if (is_digit(*token)) {
+                        errno = 0;
+                        ret_val = strtoi(token, size);
+                        if (!ret_val && errno)
+                            fatal("Invalid return value!\n");
 
-                ASTNode *literal = ecalloc(sizeof(ASTNode));
-                literal->parent = statement;
-                literal->type = Type_Literal;
-                literal->val = ret_val;
-                add_to_AST(statement, literal);
+                        ASTNode *literal = ecalloc(sizeof(ASTNode));
+                        literal->type = Type_Literal;
+                        literal->val = ret_val;
+                        add_to_AST(cur_node, literal);
+                        cur_node = statement;
+                        break;
+                    }
+
+                    ASTNode *expression = new_ASTNode(Type_Expression);
+                    add_to_AST(cur_node, expression);
+                    cur_node = expression;
+                    if (*token == '-') { expression->op = Op_Neg; } 
+                    else if (*token == '!') { expression->op = Op_Not; } 
+                    else if (*token == '~') { expression->op = Op_BitNeg; } 
+                    else { fatal("Expected constant or expression!\n"); }
+                }
 
                 token = get_next_token(file_ptr, file_end, &size);
                 if (!size || *token != ';') fatal("Expected ;\n");
@@ -296,15 +333,37 @@ int main(int argc, char *argv[]) {
         switch (node->type) {
             case Type_Statement: {
                 if (node->op == Op_Return) { 
+                    ASTNode *cur = node->children[0];
+                    while (cur->type != Type_Literal) {
+                        cur = cur->children[0];
+                    }
+
+                    int ret_val = cur->val;
+                    while (cur->parent != node) {
+                        if (cur->parent->op == Op_Neg) {
+                            cur = cur->parent;
+                            ret_val = -ret_val;
+                        } else if (cur->parent->op == Op_Not) {
+                            cur = cur->parent;
+                            ret_val = !ret_val;
+                        } else if (cur->parent->op == Op_BitNeg) {
+                            cur = cur->parent;
+                            ret_val = ~ret_val;
+                        } else {
+                            fatal("Unsupported expression op %d\n", cur->parent->op);
+                        }
+                    }
+
+
                     if (!memcmp("main", node->parent->name, node->parent->name_sz)) {
                         n += sprintf(out_buf + n, "    mov rax, 60\n" 
                                                   "    mov rdi, %d\n" 
                                                   "    syscall\n",
-                                                  node->children[0]->val);
+                                                  ret_val);
                     } else {
                         n += sprintf(out_buf + n, "    mov rax, %d\n" 
                                                   "    ret\n\n", 
-                                                  node->children[0]->val);
+                                                  ret_val);
                     }
                 } else {
                     fatal("Op type %d not handled yet!\n", node->op);
@@ -321,9 +380,8 @@ int main(int argc, char *argv[]) {
                                               node->name_sz, node->name);  
                 }
             } break;
-            case Type_Literal: {
-
-            } break;
+            case Type_Expression: { } break;
+            case Type_Literal: { } break; // So far, literals are nops
             default: {
                 fatal("node type %d not handled yet!\n", node->type);
             }
