@@ -25,27 +25,34 @@ typedef struct ASTNode {
     char *name;
     int name_sz;
     struct ASTNode **children;
-    int children_len;
+    int children_cur_len;  // current # elements for the children buffer
+    int children_max_len; // max # elements for the children buffer
     struct ASTNode *parent;
     Op op;
 } ASTNode;
 
 int line_num = 0;
-char *line_str;
+char *line_str = NULL;
 
 #define fatal(...)             \
 do {                           \
-    char *tmp_ptr = line_str;  \
-    while (*tmp_ptr != '\n' && *tmp_ptr != '\0') { \
-        tmp_ptr++;             \
-    }                          \
-    printf("line %d: ", line_num);  \
-    printf("\"%.*s\"\n", (int)(tmp_ptr - line_str), line_str); \
+    print_line_error();        \
     printf("\033[0;31m");      \
     printf(__VA_ARGS__);       \
     printf("\033[0m");         \
     exit(1);                   \
 } while (0)
+
+void print_line_error(void) {
+    if (line_str) {            
+        char *tmp_ptr = line_str;                      
+        while (*tmp_ptr != '\n' && *tmp_ptr != '\0') { 
+            tmp_ptr++;                                 
+        }                                              
+        printf("line %d: ", line_num);                 
+        printf("\"%.*s\"\n", (int)(tmp_ptr - line_str), line_str); 
+    }
+}
 
 void *emalloc(size_t sz) {
     void *ptr = malloc(sz);
@@ -57,6 +64,14 @@ void *emalloc(size_t sz) {
 
 void *ecalloc(size_t sz) {
     void *ptr = calloc(sz, 1);
+    if (!ptr)
+        fatal("Out of memory!\n");
+
+    return ptr;
+}
+
+void *erealloc(void *in_ptr, size_t sz) {
+    void *ptr = realloc(in_ptr, sz);
     if (!ptr)
         fatal("Out of memory!\n");
 
@@ -133,6 +148,24 @@ exit:
     return token;
 }
 
+void add_to_AST(ASTNode *parent, ASTNode *child) {
+    if (parent->children_cur_len < parent->children_max_len) {
+        parent->children[parent->children_cur_len++] = child;
+    } else {
+        parent->children = erealloc(parent->children, parent->children_max_len * 2);
+        parent->children_max_len *= 2;
+        parent->children[parent->children_cur_len++] = child;
+    }
+}
+
+ASTNode *new_ASTNode(Type t) {
+    ASTNode *node = ecalloc(sizeof(ASTNode));
+    node->children = ecalloc(sizeof(ASTNode *) * 10);
+    node->children_max_len = 10;
+    node->type = t;
+    return node;
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 3)
         fatal("uoq: should be %s <in_file> <out_file>\n", argv[0]);
@@ -161,9 +194,7 @@ int main(int argc, char *argv[]) {
 
     int ret_val;
 
-    ASTNode program = {0};
-    program.type = Type_Program;
-    program.children = ecalloc(sizeof(ASTNode *) * 10);
+    ASTNode *program = new_ASTNode(Type_Program);
 
     int size;
     char *file_ptr = file_buf;
@@ -179,13 +210,11 @@ int main(int argc, char *argv[]) {
             token = get_next_token(file_ptr, file_end, &size);
             if (!size) fatal("Expected function name!\n");
 
-            ASTNode *function = ecalloc(sizeof(ASTNode));
-            function->type = Type_Function;
-            function->children = ecalloc(sizeof(ASTNode *) * 10);
-            function->parent = &program;
+            ASTNode *function = new_ASTNode(Type_Function);
+            function->parent = program;
             function->name = token;
             function->name_sz = size;
-            program.children[program.children_len++] = function;
+            add_to_AST(program, function);
 
             file_ptr = token + size;
             token = get_next_token(file_ptr, file_end, &size);
@@ -218,12 +247,10 @@ int main(int argc, char *argv[]) {
                 if (memcmp(token, "return", size))
                     fatal("Expected return!\n");
 
-                ASTNode *statement = ecalloc(sizeof(ASTNode));
-                statement->type = Type_Statement;
-                statement->children = ecalloc(sizeof(ASTNode *) * 10);
+                ASTNode *statement = new_ASTNode(Type_Statement);
                 statement->parent = function;
                 statement->op = Op_Return;
-                function->children[function->children_len++] = statement;
+                add_to_AST(function, statement);
 
                 token = get_next_token(file_ptr, file_end, &size);
                 if (!size) fatal("Expected constant!\n");
@@ -235,10 +262,10 @@ int main(int argc, char *argv[]) {
                     fatal("Invalid return value!\n");
 
                 ASTNode *literal = ecalloc(sizeof(ASTNode));
-                literal->type = Type_Literal;
                 literal->parent = statement;
+                literal->type = Type_Literal;
                 literal->val = ret_val;
-                statement->children[statement->children_len++] = literal;
+                add_to_AST(statement, literal);
 
                 token = get_next_token(file_ptr, file_end, &size);
                 if (!size || *token != ';') fatal("Expected ;\n");
@@ -258,8 +285,8 @@ int main(int argc, char *argv[]) {
     int stack_depth = 0;
     ASTNode *stack[100] = {0};
 
-    ASTNode *node = &program;
-    for (i = node->children_len - 1; i >= 0; i--) {
+    ASTNode *node = program;
+    for (i = node->children_cur_len - 1; i >= 0; i--) {
         stack[stack_depth++] = node->children[i];
     }
 
@@ -302,7 +329,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        for (i = node->children_len - 1; i >= 0; i--) {
+        for (i = node->children_cur_len - 1; i >= 0; i--) {
             stack[stack_depth++] = node->children[i];
         }
     }
